@@ -4,23 +4,65 @@ import axios from 'axios';
 const ScrapeForm = () => {
   const [url, setUrl] = useState('');
   const [category, setCategory] = useState('');
+  const [contentType, setContentType] = useState('books');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [messageType, setMessageType] = useState<'success' | 'error'>('success');
 
-  const categories = [
-    'Fiction',
-    'Non-Fiction',
-    'Mystery',
-    'Romance',
-    'Science Fiction',
-    'Fantasy',
-    'Biography',
-    'History',
-    'Self-Help',
-    'Children',
-    'General'
+  const contentTypes = [
+    { value: 'books', label: 'Books' },
+    { value: 'movies', label: 'Movies' },
+    { value: 'tvshows', label: 'TV Shows' }
   ];
+
+  const getCategories = () => {
+    switch (contentType) {
+      case 'books':
+        return [
+          'Fiction',
+          'Non-Fiction',
+          'Mystery',
+          'Romance',
+          'Science Fiction',
+          'Fantasy',
+          'Biography',
+          'History',
+          'Self-Help',
+          'Children',
+          'General'
+        ];
+      case 'movies':
+        return [
+          'Action',
+          'Comedy',
+          'Drama',
+          'Horror',
+          'Romance',
+          'Sci-Fi',
+          'Thriller',
+          'Documentary',
+          'Animation',
+          'Adventure',
+          'General'
+        ];
+      case 'tvshows':
+        return [
+          'Drama',
+          'Comedy',
+          'Reality',
+          'Documentary',
+          'News',
+          'Talk Show',
+          'Game Show',
+          'Soap Opera',
+          'Mini-Series',
+          'Animation',
+          'General'
+        ];
+      default:
+        return ['General'];
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -37,11 +79,13 @@ const ScrapeForm = () => {
     try {
       const response = await axios.post('http://localhost:5000/scrape', {
         url: url.trim(),
-        category: category || 'General'
+        category: category || 'General',
+        contentType: contentType
       });
 
       if (response.data.success) {
-        setMessage(`Successfully scraped ${response.data.count} books!`);
+        const itemType = contentType === 'tvshows' ? 'TV shows' : contentType;
+        setMessage(`Successfully scraped ${response.data.count} ${itemType}!`);
         setMessageType('success');
         setUrl('');
         setCategory('');
@@ -64,10 +108,31 @@ const ScrapeForm = () => {
       <div className="bg-white rounded-lg shadow-md p-6">
         <h2 className="text-3xl font-bold text-gray-800 mb-6 text-center">Web Scraper</h2>
         <p className="text-gray-600 mb-6 text-center">
-          Enter a URL from books.toscrape.com to scrape book data
+          Enter a URL to scrape books, movies, or TV shows data
         </p>
         
         <form onSubmit={handleSubmit} className="space-y-6">
+          <div>
+            <label htmlFor="contentType" className="block text-sm font-medium text-gray-700 mb-2">
+              Content Type
+            </label>
+            <select
+              id="contentType"
+              value={contentType}
+              onChange={(e) => {
+                setContentType(e.target.value);
+                setCategory(''); // Reset category when content type changes
+              }}
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
+            >
+              {contentTypes.map((type) => (
+                <option key={type.value} value={type.value}>
+                  {type.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
           <div>
             <label htmlFor="url" className="block text-sm font-medium text-gray-700 mb-2">
               URL to Scrape
@@ -77,7 +142,9 @@ const ScrapeForm = () => {
               id="url"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://books.toscrape.com/catalogue/page-1.html"
+              placeholder={contentType === 'books' ? 'https://books.toscrape.com/catalogue/page-1.html' : 
+                          contentType === 'movies' ? 'https://www.imdb.com/chart/top/' : 
+                          'https://www.imdb.com/chart/toptv/'}
               className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
               required
             />
@@ -94,7 +161,7 @@ const ScrapeForm = () => {
               className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
             >
               <option value="">Select a category...</option>
-              {categories.map((cat) => (
+              {getCategories().map((cat) => (
                 <option key={cat} value={cat}>
                   {cat}
                 </option>
@@ -130,11 +197,27 @@ const ScrapeForm = () => {
 
         <div className="mt-8 p-4 bg-blue-50 rounded-lg">
           <h3 className="font-semibold text-blue-800 mb-2">Example URLs:</h3>
-          <ul className="text-sm text-blue-600 space-y-1">
-            <li>• https://books.toscrape.com/catalogue/page-1.html</li>
-            <li>• https://books.toscrape.com/catalogue/page-2.html</li>
-            <li>• https://books.toscrape.com/</li>
-          </ul>
+          {contentType === 'books' && (
+            <ul className="text-sm text-blue-600 space-y-1">
+              <li>• https://books.toscrape.com/catalogue/page-1.html</li>
+              <li>• https://books.toscrape.com/catalogue/page-2.html</li>
+              <li>• https://books.toscrape.com/</li>
+            </ul>
+          )}
+          {contentType === 'movies' && (
+            <ul className="text-sm text-blue-600 space-y-1">
+              <li>• https://www.imdb.com/chart/top/</li>
+              <li>• https://www.imdb.com/chart/moviemeter/</li>
+              <li>• https://www.imdb.com/search/title/?title_type=feature</li>
+            </ul>
+          )}
+          {contentType === 'tvshows' && (
+            <ul className="text-sm text-blue-600 space-y-1">
+              <li>• https://www.imdb.com/chart/toptv/</li>
+              <li>• https://www.imdb.com/chart/tvmeter/</li>
+              <li>• https://www.imdb.com/search/title/?title_type=tv_series</li>
+            </ul>
+          )}
         </div>
       </div>
     </div>

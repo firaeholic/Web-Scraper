@@ -2,12 +2,14 @@ import { useState, useEffect } from 'react';
 import axios from 'axios';
 
 interface ScrapedItem {
+  _id?: string;
   title: string;
   price: string;
   availability: string;
   category: string;
   source: string;
   timestamp: string;
+  contentType?: string;
 }
 
 interface SiteSummary {
@@ -16,13 +18,30 @@ interface SiteSummary {
 
 const Dashboard = () => {
   const [data, setData] = useState<ScrapedItem[]>([]);
+  const [filteredData, setFilteredData] = useState<ScrapedItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [siteSummary, setSiteSummary] = useState<SiteSummary>({});
+  const [selectedItems, setSelectedItems] = useState<Set<number>>(new Set());
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [contentTypeFilter, setContentTypeFilter] = useState('all');
 
   useEffect(() => {
     fetchData();
   }, []);
+
+  useEffect(() => {
+    filterData();
+  }, [data, contentTypeFilter]);
+
+  const filterData = () => {
+    if (contentTypeFilter === 'all') {
+      setFilteredData(data);
+    } else {
+      setFilteredData(data.filter(item => item.contentType === contentTypeFilter));
+    }
+    setSelectedItems(new Set()); // Clear selection when filter changes
+  };
 
   const fetchData = async () => {
     try {
@@ -47,8 +66,14 @@ const Dashboard = () => {
   const calculateSiteSummary = (items: ScrapedItem[]) => {
     const summary: SiteSummary = {};
     items.forEach(item => {
-      const domain = new URL(item.source).hostname;
-      summary[domain] = (summary[domain] || 0) + 1;
+      try {
+        const domain = new URL(item.source).hostname;
+        summary[domain] = (summary[domain] || 0) + 1;
+      } catch (error) {
+        // If URL is invalid, use the source as-is or a fallback
+        const fallbackDomain = item.source || 'Unknown Source';
+        summary[fallbackDomain] = (summary[fallbackDomain] || 0) + 1;
+      }
     });
     setSiteSummary(summary);
   };
@@ -63,17 +88,18 @@ const Dashboard = () => {
     copyToClipboard(rowText);
   };
 
-  const downloadCSV = () => {
-    const headers = ['Title', 'Price', 'Availability', 'Category', 'Source', 'Timestamp'];
+  const exportToCSV = () => {
+    const headers = ['Title', 'Price/Release Date', 'Availability/Rating', 'Category', 'Source', 'Timestamp', 'Content Type'];
     const csvContent = [
       headers.join(','),
-      ...data.map(item => [
+      ...filteredData.map(item => [
         `"${item.title.replace(/"/g, '""')}"`,
         `"${item.price}"`,
         `"${item.availability}"`,
         `"${item.category}"`,
         `"${item.source}"`,
-        `"${new Date(item.timestamp).toLocaleString()}"`
+        `"${new Date(item.timestamp).toLocaleString()}"`,
+        `"${item.contentType || 'books'}"`
       ].join(','))
     ].join('\n');
 
@@ -81,24 +107,79 @@ const Dashboard = () => {
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `scraped-data-${new Date().toISOString().split('T')[0]}.csv`;
+    const filterSuffix = contentTypeFilter !== 'all' ? `_${contentTypeFilter}` : '';
+    a.download = `scraped-data-${new Date().toISOString().split('T')[0]}${filterSuffix}.csv`;
     a.click();
     window.URL.revokeObjectURL(url);
   };
 
-  const downloadJSON = () => {
-    const jsonContent = JSON.stringify(data, null, 2);
+  const exportToJSON = () => {
+    const jsonContent = JSON.stringify(filteredData, null, 2);
     const blob = new Blob([jsonContent], { type: 'application/json' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `scraped-data-${new Date().toISOString().split('T')[0]}.json`;
+    const filterSuffix = contentTypeFilter !== 'all' ? `_${contentTypeFilter}` : '';
+    a.download = `scraped-data-${new Date().toISOString().split('T')[0]}${filterSuffix}.json`;
     a.click();
     window.URL.revokeObjectURL(url);
   };
 
   const formatDate = (timestamp: string) => {
     return new Date(timestamp).toLocaleString();
+  };
+
+  const handleSelectItem = (index: number) => {
+    const newSelected = new Set(selectedItems);
+    if (newSelected.has(index)) {
+      newSelected.delete(index);
+    } else {
+      newSelected.add(index);
+    }
+    setSelectedItems(newSelected);
+  };
+
+  const handleSelectAll = () => {
+    if (selectedItems.size === filteredData.length) {
+      setSelectedItems(new Set());
+    } else {
+      setSelectedItems(new Set(filteredData.map((_, index) => index)));
+    }
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedItems.size === 0) return;
+    
+    try {
+      setIsDeleting(true);
+      const indicesToDelete = Array.from(selectedItems);
+      const itemsToDelete = indicesToDelete.map(index => filteredData[index]);
+      
+      // Send delete request to backend
+      const response = await axios.post('http://localhost:5000/delete', {
+        items: itemsToDelete
+      });
+      
+      if (response.data.success) {
+        // Remove deleted items from local state
+        const deletedItemsSet = new Set(itemsToDelete.map(item => 
+          `${item.title}-${item.source}-${item.timestamp}`
+        ));
+        const newData = data.filter(item => 
+          !deletedItemsSet.has(`${item.title}-${item.source}-${item.timestamp}`)
+        );
+        setData(newData);
+        calculateSiteSummary(newData);
+        setSelectedItems(new Set());
+      } else {
+        setError('Failed to delete items');
+      }
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
+      setError('Error deleting items: ' + errorMessage);
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   if (loading) {
@@ -135,7 +216,10 @@ const Dashboard = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
           <div className="bg-blue-50 p-4 rounded-lg">
             <h3 className="font-semibold text-blue-800">Total Items</h3>
-            <p className="text-2xl font-bold text-blue-600">{data.length}</p>
+            <p className="text-2xl font-bold text-blue-600">{filteredData.length}</p>
+            {contentTypeFilter !== 'all' && (
+              <p className="text-sm text-gray-500">({data.length} total)</p>
+            )}
           </div>
           <div className="bg-green-50 p-4 rounded-lg">
             <h3 className="font-semibold text-green-800">Sites Scraped</h3>
@@ -144,7 +228,7 @@ const Dashboard = () => {
           <div className="bg-purple-50 p-4 rounded-lg">
             <h3 className="font-semibold text-purple-800">Categories</h3>
             <p className="text-2xl font-bold text-purple-600">
-              {new Set(data.map(item => item.category)).size}
+              {new Set(filteredData.map(item => item.category)).size}
             </p>
           </div>
         </div>
@@ -164,21 +248,60 @@ const Dashboard = () => {
           </div>
         )}
 
-        {/* Export Buttons */}
+        {/* Content Type Filter */}
+        <div className="mb-6">
+          <div className="bg-white p-4 rounded-lg shadow">
+            <h3 className="text-lg font-semibold text-gray-900 mb-3">Filter by Content Type</h3>
+            <div className="flex flex-wrap gap-2">
+              {['all', 'books', 'movies', 'tvshows'].map((type) => (
+                <button
+                  key={type}
+                  onClick={() => setContentTypeFilter(type)}
+                  className={`px-4 py-2 rounded-lg transition-colors ${
+                    contentTypeFilter === type
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                  }`}
+                >
+                  {type === 'all' ? 'All' : type === 'tvshows' ? 'TV Shows' : type.charAt(0).toUpperCase() + type.slice(1)}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Action Buttons */}
         {data.length > 0 && (
-          <div className="flex space-x-4">
-            <button
-              onClick={downloadCSV}
-              className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors"
-            >
-              Download CSV
-            </button>
-            <button
-              onClick={downloadJSON}
-              className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition-colors"
-            >
-              Download JSON
-            </button>
+          <div className="flex flex-wrap gap-4 items-center">
+            <div className="flex space-x-4">
+              <button
+                onClick={exportToCSV}
+                className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors"
+              >
+                Export CSV
+              </button>
+              <button
+                onClick={exportToJSON}
+                className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition-colors"
+              >
+                Export JSON
+              </button>
+            </div>
+            
+            {selectedItems.size > 0 && (
+              <div className="flex items-center space-x-4">
+                <span className="text-sm text-gray-600">
+                  {selectedItems.size} item{selectedItems.size !== 1 ? 's' : ''} selected
+                </span>
+                <button
+                  onClick={handleDeleteSelected}
+                  disabled={isDeleting}
+                  className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isDeleting ? 'Deleting...' : 'Delete Selected'}
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -191,13 +314,25 @@ const Dashboard = () => {
               <thead className="bg-gray-50">
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <input
+                      type="checkbox"
+                      checked={filteredData.length > 0 && selectedItems.size === filteredData.length}
+                      onChange={handleSelectAll}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Title
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Price
+                    {contentTypeFilter === 'books' ? 'Price' : 
+                     contentTypeFilter === 'movies' || contentTypeFilter === 'tvshows' ? 'Release Date' : 
+                     'Price/Release Date'}
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Availability
+                    {contentTypeFilter === 'books' ? 'Availability' : 
+                     contentTypeFilter === 'movies' || contentTypeFilter === 'tvshows' ? 'Rating' : 
+                     'Availability/Rating'}
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Category
@@ -214,13 +349,21 @@ const Dashboard = () => {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {data.map((item, index) => (
-                  <tr key={index} className="hover:bg-gray-50">
+                {filteredData.map((item, index) => (
+                  <tr key={index} className={`hover:bg-gray-50 ${selectedItems.has(index) ? 'bg-blue-50' : ''}`}>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <input
+                        type="checkbox"
+                        checked={selectedItems.has(index)}
+                        onChange={() => handleSelectItem(index)}
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                    </td>
                     <td className="px-6 py-4 text-sm text-gray-900 max-w-xs truncate">
                       {item.title}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      £{item.price}
+                      {item.price}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                       {item.availability}
@@ -237,7 +380,13 @@ const Dashboard = () => {
                         rel="noopener noreferrer"
                         className="text-blue-600 hover:text-blue-800"
                       >
-                        {new URL(item.source).hostname}
+                        {(() => {
+                          try {
+                            return new URL(item.source).hostname;
+                          } catch (error) {
+                            return item.source || 'Invalid URL';
+                          }
+                        })()}
                       </a>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
