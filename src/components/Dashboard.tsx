@@ -25,6 +25,7 @@ const Dashboard = () => {
   const [selectedItems, setSelectedItems] = useState<Set<number>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
   const [contentTypeFilter, setContentTypeFilter] = useState('all');
+  const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
     fetchData();
@@ -32,14 +33,24 @@ const Dashboard = () => {
 
   useEffect(() => {
     filterData();
-  }, [data, contentTypeFilter]);
+  }, [data, contentTypeFilter, searchQuery]);
 
   const filterData = () => {
-    if (contentTypeFilter === 'all') {
-      setFilteredData(data);
-    } else {
-      setFilteredData(data.filter(item => item.contentType === contentTypeFilter));
+    let filtered = data;
+    
+    // Filter by content type
+    if (contentTypeFilter !== 'all') {
+      filtered = filtered.filter(item => item.contentType === contentTypeFilter);
     }
+    
+    // Filter by search query (search in title)
+    if (searchQuery.trim()) {
+      filtered = filtered.filter(item => 
+        item.title.toLowerCase().includes(searchQuery.toLowerCase().trim())
+      );
+    }
+    
+    setFilteredData(filtered);
     setSelectedItems(new Set()); // Clear selection when filter changes
   };
 
@@ -70,6 +81,7 @@ const Dashboard = () => {
         const domain = new URL(item.source).hostname;
         summary[domain] = (summary[domain] || 0) + 1;
       } catch (error) {
+        console.error('Error parsing URL:', error);
         // If URL is invalid, use the source as-is or a fallback
         const fallbackDomain = item.source || 'Unknown Source';
         summary[fallbackDomain] = (summary[fallbackDomain] || 0) + 1;
@@ -248,8 +260,9 @@ const Dashboard = () => {
           </div>
         )}
 
-        {/* Content Type Filter */}
-        <div className="mb-6">
+        {/* Filters Section */}
+        <div className="mb-6 space-y-4">
+          {/* Content Type Filter */}
           <div className="bg-white p-4 rounded-lg shadow">
             <h3 className="text-lg font-semibold text-gray-900 mb-3">Filter by Content Type</h3>
             <div className="flex flex-wrap gap-2">
@@ -267,6 +280,40 @@ const Dashboard = () => {
                 </button>
               ))}
             </div>
+          </div>
+          
+          {/* Search Filter */}
+          <div className="bg-white p-4 rounded-lg shadow">
+            <h3 className="text-lg font-semibold text-gray-900 mb-3">Search by Title</h3>
+            <div className="relative">
+              <input
+                type="text"
+                placeholder="Search items by title..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full px-4 py-2 pl-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
+              />
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+              </div>
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                >
+                  <svg className="h-5 w-5 text-gray-400 hover:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
+            {searchQuery && (
+              <p className="mt-2 text-sm text-gray-600">
+                Showing {filteredData.length} result(s) for "{searchQuery}"
+              </p>
+            )}
           </div>
         </div>
 
@@ -384,6 +431,7 @@ const Dashboard = () => {
                           try {
                             return new URL(item.source).hostname;
                           } catch (error) {
+                            console.error('Error parsing URL:', error);
                             return item.source || 'Invalid URL';
                           }
                         })()}

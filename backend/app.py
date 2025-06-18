@@ -1,14 +1,87 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from pymongo import MongoClient
-from datetime import datetime
-import requests
 from bs4 import BeautifulSoup
+import requests
 import re
+from datetime import datetime
 import json
+import time
+import threading
+from queue import Queue
 
 app = Flask(__name__)
 CORS(app)
+
+# Global progress tracking
+progress_data = {
+    'total_items': 0,
+    'processed_items': 0,
+    'ai_total': 0,
+    'ai_processed': 0,
+    'status': 'idle',
+    'message': ''
+}
+progress_lock = threading.Lock()
+
+def update_progress(total=None, processed=None, ai_total=None, ai_processed=None, status=None, message=None):
+    """Update global progress data thread-safely"""
+    with progress_lock:
+        if total is not None:
+            progress_data['total_items'] = total
+        if processed is not None:
+            progress_data['processed_items'] = processed
+        if ai_total is not None:
+            progress_data['ai_total'] = ai_total
+        if ai_processed is not None:
+            progress_data['ai_processed'] = ai_processed
+        if status is not None:
+            progress_data['status'] = status
+        if message is not None:
+            progress_data['message'] = message
+
+@app.route('/progress')
+def progress_stream():
+    """Server-Sent Events endpoint for real-time progress updates"""
+    def generate():
+        while True:
+            with progress_lock:
+                data = progress_data.copy()
+            
+            # Calculate percentages
+            scraping_percentage = 0
+            ai_percentage = 0
+            
+            if data['total_items'] > 0:
+                scraping_percentage = (data['processed_items'] / data['total_items']) * 100
+            
+            if data['ai_total'] > 0:
+                ai_percentage = (data['ai_processed'] / data['ai_total']) * 100
+            
+            progress_info = {
+                'total_items': data['total_items'],
+                'processed_items': data['processed_items'],
+                'ai_total': data['ai_total'],
+                'ai_processed': data['ai_processed'],
+                'scraping_percentage': round(scraping_percentage, 1),
+                'ai_percentage': round(ai_percentage, 1),
+                'status': data['status'],
+                'message': data['message']
+            }
+            
+            yield f"data: {json.dumps(progress_info)}\n\n"
+            
+            if data['status'] == 'completed' or data['status'] == 'error':
+                break
+                
+            time.sleep(0.5)  # Update every 500ms
+    
+    response = Response(generate(), mimetype='text/event-stream')
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['Connection'] = 'keep-alive'
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Cache-Control'
+    return response
 
 # Google Gemini AI configuration
 GEMINI_API_KEY = "AIzaSyAw5Bp8qpNceQFQ3hGevcV2HCNfevhwONs"
@@ -80,16 +153,10 @@ client = MongoClient('mongodb://localhost:27017')
 db = client['ScrapedData']
 collection = db['Data']
 
-@app.route('/scrape', methods=['POST'])
-def scrape_content():
+def perform_scraping(url, category, content_type):
+    """Perform scraping in a separate thread with progress tracking"""
     try:
-        data = request.get_json()
-        url = data.get('url')
-        category = data.get('category')
-        content_type = data.get('contentType', 'books')
-        
-        if not url:
-            return jsonify({'error': 'URL is required'}), 400
+        update_progress(status='starting', message='Initializing scraping...')
         
         # Send GET request to the URL
         headers = {
@@ -97,6 +164,8 @@ def scrape_content():
         }
         response = requests.get(url, headers=headers)
         response.raise_for_status()
+        
+        update_progress(status='parsing', message='Parsing HTML content...')
         
         # Parse HTML content
         soup = BeautifulSoup(response.content, 'html.parser')
@@ -112,16 +181,38 @@ def scrape_content():
         
         # Insert into MongoDB
         if scraped_items:
+            update_progress(status='saving', message='Saving to database...')
             collection.insert_many(scraped_items)
+        
+        update_progress(status='completed', message=f'Successfully scraped {len(scraped_items)} {content_type}')
+        
+    except Exception as e:
+        update_progress(status='error', message=f'Error: {str(e)}')
+
+@app.route('/scrape', methods=['POST'])
+def scrape_content():
+    try:
+        data = request.get_json()
+        url = data.get('url')
+        category = data.get('category')
+        content_type = data.get('contentType', 'books')
+        
+        if not url:
+            return jsonify({'error': 'URL is required'}), 400
+        
+        # Reset progress
+        update_progress(total=0, processed=0, ai_total=0, ai_processed=0, status='starting', message='Starting scrape...')
+        
+        # Start scraping in a separate thread
+        scraping_thread = threading.Thread(target=perform_scraping, args=(url, category, content_type))
+        scraping_thread.daemon = True
+        scraping_thread.start()
         
         return jsonify({
             'success': True,
-            'message': f'Successfully scraped {len(scraped_items)} {content_type}',
-            'count': len(scraped_items)
+            'message': 'Scraping started. Use /progress endpoint for real-time updates.'
         })
         
-    except requests.RequestException as e:
-        return jsonify({'error': f'Failed to fetch URL: {str(e)}'}), 400
     except Exception as e:
         return jsonify({'error': f'An error occurred: {str(e)}'}), 500
 
@@ -186,7 +277,11 @@ def scrape_movies_data(soup, url, category):
                   soup.select('a[href*="/movie/"]') or
                   soup.select('a[href*="/watch/"]'))
     
-    for movie in movies:
+    # Initialize progress tracking
+    total_movies = len(movies)
+    update_progress(total=total_movies, processed=0, status='scraping', message=f'Found {total_movies} movies to process')
+    
+    for index, movie in enumerate(movies):
         try:
             title = 'N/A'
             release_date = 'N/A'
@@ -322,6 +417,9 @@ def scrape_movies_data(soup, url, category):
             
             scraped_movies.append(movie_doc)
             
+            # Update progress after each movie
+            update_progress(processed=index + 1, message=f'Processed {index + 1}/{total_movies} movies')
+            
         except Exception as e:
             print(f"Error scraping movie: {e}")
             continue
@@ -329,8 +427,11 @@ def scrape_movies_data(soup, url, category):
     # Batch AI processing for movies missing release dates
     movies_needing_ai = [movie for movie in scraped_movies if movie.get('needs_ai', False)]
     if movies_needing_ai:
-        print(f"Processing {len(movies_needing_ai)} movies with AI for missing release dates...")
-        for movie in movies_needing_ai:
+        ai_total = len(movies_needing_ai)
+        update_progress(ai_total=ai_total, ai_processed=0, status='ai_processing', 
+                       message=f'Processing {ai_total} movies with AI for missing release dates...')
+        
+        for ai_index, movie in enumerate(movies_needing_ai):
             try:
                 ai_result = extract_info_with_ai(movie['title'], "movie")
                 if ai_result:
@@ -340,6 +441,11 @@ def scrape_movies_data(soup, url, category):
                         movie['availability'] = f"Rating: {ai_result['rating']}"
             except Exception as e:
                 print(f"AI extraction failed for movie '{movie['title']}': {e}")
+            
+            # Update AI progress
+            update_progress(ai_processed=ai_index + 1, 
+                           message=f'AI processed {ai_index + 1}/{ai_total} movies')
+            
             # Remove the needs_ai flag
             movie.pop('needs_ai', None)
     
@@ -377,7 +483,11 @@ def scrape_tvshows_data(soup, url, category):
                    soup.select('a[href*="/show/"]') or
                    soup.select('a[href*="/series/"]'))
     
-    for show in tvshows:
+    # Initialize progress tracking for TV shows
+    total_shows = len(tvshows)
+    update_progress(total=total_shows, processed=0, status='scraping', message=f'Found {total_shows} TV shows to process')
+    
+    for index, show in enumerate(tvshows):
         try:
             title = 'N/A'
             release_date = 'N/A'
@@ -516,6 +626,9 @@ def scrape_tvshows_data(soup, url, category):
             
             scraped_tvshows.append(tvshow_doc)
             
+            # Update progress after each TV show
+            update_progress(processed=index + 1, message=f'Processed {index + 1}/{total_shows} TV shows')
+            
         except Exception as e:
             print(f"Error scraping TV show: {e}")
             continue
@@ -523,8 +636,11 @@ def scrape_tvshows_data(soup, url, category):
     # Batch AI processing for TV shows missing release dates
     shows_needing_ai = [show for show in scraped_tvshows if show.get('needs_ai', False)]
     if shows_needing_ai:
-        print(f"Processing {len(shows_needing_ai)} TV shows with AI for missing release dates...")
-        for show in shows_needing_ai:
+        ai_total = len(shows_needing_ai)
+        update_progress(ai_total=ai_total, ai_processed=0, status='ai_processing', 
+                       message=f'Processing {ai_total} TV shows with AI for missing release dates...')
+        
+        for ai_index, show in enumerate(shows_needing_ai):
             try:
                 ai_result = extract_info_with_ai(show['title'], "TV show")
                 if ai_result:
@@ -534,6 +650,11 @@ def scrape_tvshows_data(soup, url, category):
                         show['availability'] = f"Rating: {ai_result['rating']}"
             except Exception as e:
                 print(f"AI extraction failed for TV show '{show['title']}': {e}")
+            
+            # Update AI progress
+            update_progress(ai_processed=ai_index + 1, 
+                           message=f'AI processed {ai_index + 1}/{ai_total} TV shows')
+            
             # Remove the needs_ai flag
             show.pop('needs_ai', None)
     

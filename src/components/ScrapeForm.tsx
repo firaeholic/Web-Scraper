@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
 import axios from 'axios';
 
 const ScrapeForm = () => {
@@ -8,6 +8,17 @@ const ScrapeForm = () => {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [messageType, setMessageType] = useState<'success' | 'error'>('success');
+  const [progress, setProgress] = useState({
+    total_items: 0,
+    processed_items: 0,
+    ai_total: 0,
+    ai_processed: 0,
+    scraping_percentage: 0,
+    ai_percentage: 0,
+    status: 'idle',
+    message: ''
+  });
+  const [eventSource, setEventSource] = useState<EventSource | null>(null);
 
   const contentTypes = [
     { value: 'books', label: 'Books' },
@@ -75,33 +86,82 @@ const ScrapeForm = () => {
 
     setLoading(true);
     setMessage('');
+    setProgress({
+      total_items: 0,
+      processed_items: 0,
+      ai_total: 0,
+      ai_processed: 0,
+      scraping_percentage: 0,
+      ai_percentage: 0,
+      status: 'starting',
+      message: 'Starting scraping process...'
+    });
+
+    // Set up EventSource for progress updates
+    const es = new EventSource('http://localhost:5000/progress');
+    setEventSource(es);
+
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        setProgress(data);
+        
+        if (data.status === 'completed') {
+          const itemType = contentType === 'tvshows' ? 'TV shows' : contentType;
+          setMessage(`Successfully scraped ${data.processed_items} ${itemType}!`);
+          setMessageType('success');
+          setUrl('');
+          setCategory('');
+          setLoading(false);
+          es.close();
+          setEventSource(null);
+        } else if (data.status === 'error') {
+          setMessage(data.message || 'An error occurred while scraping');
+          setMessageType('error');
+          setLoading(false);
+          es.close();
+          setEventSource(null);
+        }
+      } catch (error) {
+        console.error('Error parsing progress data:', error);
+      }
+    };
+
+    es.onerror = () => {
+      setMessage('Connection error occurred');
+      setMessageType('error');
+      setLoading(false);
+      es.close();
+      setEventSource(null);
+    };
 
     try {
-      const response = await axios.post('http://localhost:5000/scrape', {
+      await axios.post('http://localhost:5000/scrape', {
         url: url.trim(),
         category: category || 'General',
         contentType: contentType
       });
-
-      if (response.data.success) {
-        const itemType = contentType === 'tvshows' ? 'TV shows' : contentType;
-        setMessage(`Successfully scraped ${response.data.count} ${itemType}!`);
-        setMessageType('success');
-        setUrl('');
-        setCategory('');
-      } else {
-        setMessage('Failed to scrape data');
-        setMessageType('error');
-      }
     } catch (error: unknown) {
       const apiError = (error as { response?: { data?: { error?: string } } })?.response?.data?.error;
       const errorMessage = apiError || 'An error occurred while scraping';
       setMessage(errorMessage);
       setMessageType('error');
-    } finally {
       setLoading(false);
+      if (eventSource) {
+        eventSource.close();
+        setEventSource(null);
+      }
     }
   };
+
+  // Cleanup EventSource on component unmount
+  React.useEffect(() => {
+    return () => {
+      if (eventSource) {
+        eventSource.close();
+      }
+    };
+  }, [eventSource]);
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -184,6 +244,54 @@ const ScrapeForm = () => {
             )}
           </button>
         </form>
+
+        {/* Progress Display */}
+        {loading && progress.status !== 'idle' && (
+          <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+            <h3 className="font-semibold text-blue-800 mb-3">Scraping Progress</h3>
+            
+            {/* Scraping Progress */}
+            {progress.total_items > 0 && (
+              <div className="mb-4">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-sm font-medium text-blue-700">Items Scraped</span>
+                  <span className="text-sm text-blue-600">
+                    {progress.processed_items}/{progress.total_items} ({progress.scraping_percentage.toFixed(1)}%)
+                  </span>
+                </div>
+                <div className="w-full bg-blue-200 rounded-full h-2">
+                  <div 
+                    className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                    style={{ width: `${progress.scraping_percentage}%` }}
+                  ></div>
+                </div>
+              </div>
+            )}
+            
+            {/* AI Processing Progress */}
+            {progress.ai_total > 0 && (
+              <div className="mb-4">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-sm font-medium text-purple-700">AI Data Polishing</span>
+                  <span className="text-sm text-purple-600">
+                    {progress.ai_processed}/{progress.ai_total} ({progress.ai_percentage.toFixed(1)}%)
+                  </span>
+                </div>
+                <div className="w-full bg-purple-200 rounded-full h-2">
+                  <div 
+                    className="bg-purple-600 h-2 rounded-full transition-all duration-300"
+                    style={{ width: `${progress.ai_percentage}%` }}
+                  ></div>
+                </div>
+              </div>
+            )}
+            
+            {/* Status Message */}
+            <div className="text-sm text-gray-600">
+              <span className="font-medium">Status:</span> {progress.message}
+            </div>
+          </div>
+        )}
 
         {message && (
           <div className={`mt-6 p-4 rounded-lg ${
